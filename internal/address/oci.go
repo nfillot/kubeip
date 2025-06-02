@@ -343,3 +343,22 @@ func parseOCIFilters(cfg *config.Config) (*types.OCIFilters, error) {
 		FreeformTags: freeformTags,
 	}, nil
 }
+
+func (a *ociAssigner) GetIPAddressStats(ctx context.Context, _ []string, _ string) (usable, assigned int, err error) {
+	// Fetch all reserved Public IPs (both available and assigned)
+	// Pass useFilter=true to apply configured filters, inUse=false to get available ones
+	availableReservedIPs, err := a.fetchPublicIps(ctx, true, false)
+	if err != nil {
+		return 0, 0, errors.Wrap(err, "failed to list available reserved public IPs for stats")
+	}
+	// Pass useFilter=true, inUse=true to get assigned ones
+	assignedReservedIPs, err := a.fetchPublicIps(ctx, true, true)
+	if err != nil {
+		return 0, 0, errors.Wrap(err, "failed to list assigned reserved public IPs for stats")
+	}
+
+	usable = len(availableReservedIPs) + len(assignedReservedIPs)
+	assigned = len(assignedReservedIPs)
+
+	return usable, assigned, nil
+}

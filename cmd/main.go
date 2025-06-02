@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"runtime"
 	"time"
@@ -13,6 +14,8 @@ import (
 	nd "github.com/doitintl/kubeip/internal/node"
 	"github.com/doitintl/kubeip/internal/types"
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	"k8s.io/client-go/kubernetes"
@@ -36,6 +39,12 @@ var (
 	gitCommit    string
 	gitBranch    string
 	errEmptyPath = errors.New("empty path")
+
+	// Prometheus metrics
+	kubeipIPAddressUsableTotal = prometheus.NewGauge(prometheus.GaugeOpts{Name: "kubeip_ip_address_usable_total", Help: "Total number of reserved IP addresses found and usable by KubeIP"})
+	kubeipIPAddressAssignedTotal = prometheus.NewGauge(prometheus.GaugeOpts{Name: "kubeip_ip_address_assigned_total", Help: "Total number of available IP addresses currently in use"})
+	kubeipIPAddressAvailableTotal = prometheus.NewGauge(prometheus.GaugeOpts{Name: "kubeip_ip_address_available_total", Help: "Total number of available IP addresses still available (not in use)"})
+	kubeipIPAddressAssigned = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "kubeip_ip_address_assigned", Help: "Indicates if an IP address was assigned to the node KubeIP is running on (0 for success, 1 for failure)"}, []string{"k8s_node", "ip_address_name", "ip_address"})
 )
 
 const (
@@ -117,6 +126,7 @@ func assignAddress(c context.Context, log *logrus.Entry, client kubernetes.Inter
 			return assignedAddress, nil
 		}(c)
 		if err == nil || errors.Is(err, address.ErrStaticIPAlreadyAssigned) {
+			kubeipIPAddressAssigned.WithLabelValues(node.Name, assignedAddress, assignedAddress).Set(0)
 			return assignedAddress, nil
 		}
 
@@ -134,6 +144,7 @@ func assignAddress(c context.Context, log *logrus.Entry, client kubernetes.Inter
 			return "", errors.Wrap(ctx.Err(), "context cancelled while assigning addresses")
 		}
 	}
+	kubeipIPAddressAssigned.WithLabelValues(node.Name, "unknown", "unknown").Set(1)
 	return "", errors.New("reached maximum number of retries")
 }
 
@@ -198,6 +209,15 @@ func run(c context.Context, log *logrus.Entry, cfg *config.Config) error {
 	ctx, cancel := context.WithCancel(c)
 	defer cancel()
 
+	// Start metrics server
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		log.Infof("Starting metrics server on %s", cfg.MetricsAddr)
+		if err := http.ListenAndServe(cfg.MetricsAddr, nil); err != nil {
+			log.WithError(err).Error("Failed to start metrics server")
+		}
+	}()
+
 	// add debug mode to context
 	if cfg.DevelopMode {
 		ctx = context.WithValue(ctx, developModeKey, true)
@@ -225,6 +245,22 @@ func run(c context.Context, log *logrus.Entry, cfg *config.Config) error {
 	assigner, err := address.NewAssigner(ctx, log, n.Cloud, cfg)
 	if err != nil {
 		return errors.Wrap(err, "initializing assigner")
+	}
+
+	// Get IP address statistics
+	usable, assigned, statsErr := assigner.GetIPAddressStats(ctx, cfg.Filter, cfg.OrderBy)
+	if statsErr != nil {
+		log.WithError(statsErr).Error("failed to get IP address stats")
+		// Continue execution even if stats fetching fails, as IP assignment is the primary function.
+	} else {
+		kubeipIPAddressUsableTotal.Set(float64(usable))
+		kubeipIPAddressAssignedTotal.Set(float64(assigned))
+		kubeipIPAddressAvailableTotal.Set(float64(usable - assigned))
+		log.WithFields(logrus.Fields{
+			"usable":   usable,
+			"assigned": assigned,
+			"available": usable - assigned,
+		}).Info("IP address stats updated")
 	}
 
 	assignedAddress, err := assignAddress(ctx, log, clientset, assigner, n, cfg)
@@ -288,6 +324,12 @@ func runCmd(c *cli.Context) error {
 	ctx := signals.SetupSignalHandler()
 	log := prepareLogger(c.String("log-level"), c.Bool("json"))
 	cfg := config.NewConfig(c)
+
+	// Register Prometheus metrics
+	prometheus.MustRegister(kubeipIPAddressUsableTotal)
+	prometheus.MustRegister(kubeipIPAddressAssignedTotal)
+	prometheus.MustRegister(kubeipIPAddressAvailableTotal)
+	prometheus.MustRegister(kubeipIPAddressAssigned)
 
 	if err := run(ctx, log, cfg); err != nil {
 		log.WithError(err).Error("error running kubeip agent")
@@ -409,6 +451,13 @@ func main() {
 						Usage:    "enable develop mode",
 						EnvVars:  []string{"DEV_MODE"},
 						Category: "Development",
+					},
+					&cli.StringFlag{
+						Name:     "metrics-addr",
+						Usage:    "The address to listen on for HTTP requests.",
+						Value:    ":9090",
+						EnvVars:  []string{"METRICS_ADDR"},
+						Category: "Metrics",
 					},
 				},
 				Action: runCmd,

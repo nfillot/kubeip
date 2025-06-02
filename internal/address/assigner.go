@@ -18,6 +18,7 @@ var (
 type Assigner interface {
 	Assign(ctx context.Context, instanceID, zone string, filter []string, orderBy string) (string, error)
 	Unassign(ctx context.Context, instanceID, zone string) error
+	GetIPAddressStats(ctx context.Context, filter []string, orderBy string) (usable, assigned int, err error)
 }
 
 func NewAssigner(ctx context.Context, logger *logrus.Entry, provider types.CloudProvider, cfg *config.Config) (Assigner, error) {

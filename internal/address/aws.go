@@ -328,3 +328,34 @@ func (a *awsAssigner) Unassign(ctx context.Context, instanceID, _ string) error 
 
 	return nil
 }
+
+func (a *awsAssigner) GetIPAddressStats(ctx context.Context, filter []string, orderBy string) (usable, assigned int, err error) {
+	// For AWS, getAvailableElasticIPs lists addresses that are *not* currently associated with an instance.
+	// To get all potentially usable IPs by kubeip (matching filter, regardless of current association status),
+	// we need to list *all* addresses matching the filter.
+	filters := make(map[string][]string)
+	for _, f := range filter {
+		name, values, err := parseShorthandFilter(f)
+		if err != nil {
+			return 0, 0, errors.Wrapf(err, "failed to parse filter %s for stats", f)
+		}
+		filters[name] = values
+	}
+	// Pass true for includeAssociated to get all addresses matching the filter
+	allMatchingAddresses, err := a.eipLister.List(ctx, filters, true)
+	if err != nil {
+		return 0, 0, errors.Wrap(err, "failed to list all matching elastic IPs for stats")
+	}
+
+	if orderBy != "" {
+		sortAddressesByField(allMatchingAddresses, orderBy)
+	}
+
+	usable = len(allMatchingAddresses)
+	for _, addr := range allMatchingAddresses {
+		if addr.AssociationId != nil {
+			assigned++
+		}
+	}
+	return usable, assigned, nil
+}

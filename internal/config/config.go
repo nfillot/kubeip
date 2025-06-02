@@ -35,6 +35,8 @@ type Config struct {
 	LeaseNamespace string `json:"lease-namespace"`
 	// TaintKey is the taint key to remove from the node once the IP address is assigned
 	TaintKey string `json:"taint-key"`
+	// MetricsAddr is the address to listen on for HTTP requests
+	MetricsAddr string `json:"metrics-addr"`
 }
 
 func NewConfig(c *cli.Context) *Config {
@@ -53,5 +55,6 @@ func NewConfig(c *cli.Context) *Config {
 	cfg.LeaseDuration = c.Int("lease-duration")
 	cfg.LeaseNamespace = c.String("lease-namespace")
 	cfg.TaintKey = c.String("taint-key")
+	cfg.MetricsAddr = c.String("metrics-addr")
 	return &cfg
 }

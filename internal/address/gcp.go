@@ -466,3 +466,26 @@ func addressPrefixLengthOrDefault(address *compute.Address) int64 {
 	}
 	return address.PrefixLength
 }
+
+func (a *gcpAssigner) GetIPAddressStats(ctx context.Context, filter []string, orderBy string) (usable, assigned int, err error) {
+	// For GCP, "available" means RESERVED but not IN_USE.
+	// "usable" in the context of kubeip usually means addresses that *can* be assigned.
+	// So we list all RESERVED addresses matching the filter.
+	reservedAddresses, err := a.listAddresses(filter, orderBy, reservedStatus)
+	if err != nil {
+		return 0, 0, errors.Wrap(err, "failed to list reserved addresses for stats")
+	}
+	// And all IN_USE addresses matching the filter.
+	inUseAddresses, err := a.listAddresses(filter, orderBy, inUseStatus)
+	if err != nil {
+		return 0, 0, errors.Wrap(err, "failed to list in-use addresses for stats")
+	}
+
+	// Usable is the total of reserved and in-use that match the filter.
+	// This interpretation aligns with "total number of reserved IP addresses found and usable by KubeIP".
+	// It means all static IPs that KubeIP *could* manage or *is* managing.
+	usable = len(reservedAddresses) + len(inUseAddresses)
+	assigned = len(inUseAddresses)
+
+	return usable, assigned, nil
+}

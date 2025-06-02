@@ -391,7 +391,26 @@ OPTIONS:
 
    --json             produce log in JSON format: Logstash and Splunk friendly (default: false) [$LOG_JSON]
    --log-level value  set log level (debug, info(*), warning, error, fatal, panic) (default: "info") [$LOG_LEVEL]
+
+   Metrics
+
+   --metrics-addr value  The address to listen on for HTTP requests. (default: ":9090") [$METRICS_ADDR]
 ```
+
+## Metrics
+
+KubeIP exposes Prometheus metrics to provide insights into its operation and the status of IP address assignments. These metrics can be scraped from the `/metrics` endpoint on the address specified by the `--metrics-addr` flag (default `:9090`).
+
+The following metrics are available:
+
+-   `kubeip_ip_address_usable_total`: (Gauge) Total number of reserved IP addresses found by KubeIP that match the configured filters and are considered usable for assignment. This includes IPs that are currently assigned and those that are available.
+-   `kubeip_ip_address_assigned_total`: (Gauge) Total number of the usable IP addresses that are currently assigned to nodes by KubeIP instances (or were found already assigned to a node that KubeIP is managing).
+-   `kubeip_ip_address_available_total`: (Gauge) Total number of the usable IP addresses that are still available (i.e., not currently assigned to any node KubeIP is managing). This is typically `kubeip_ip_address_usable_total - kubeip_ip_address_assigned_total`.
+-   `kubeip_ip_address_assigned`: (Gauge) Indicates if an IP address was successfully assigned to the specific Kubernetes node KubeIP is running on. A value of `0` indicates success, while `1` indicates failure after all retries.
+    -   Labels:
+        -   `k8s_node`: The name of the Kubernetes node.
+        -   `ip_address_name`: The name or identifier of the IP address (e.g., the IP address string itself or a cloud-specific name).
+        -   `ip_address`: The actual IP address string.
 
 ## How to test KubeIP?
 
