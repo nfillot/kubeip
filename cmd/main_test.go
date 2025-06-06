@@ -22,6 +22,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	tmock "github.com/stretchr/testify/mock"
 	"k8s.io/client-go/kubernetes/fake"
+	"github.com/sirupsen/logrus" // Added for TestMetricsRefresh
 )
 
 func Test_assignAddress(t *testing.T) {
@@ -191,6 +192,160 @@ func Test_assignAddress(t *testing.T) {
 	}
 }
 
+// MockAssigner is a mock implementation of the address.Assigner interface.
+// Note: This is defined here because the existing tests use a different mocking setup
+// (e.g., mocks.NewAssigner(t) from a `mocks` package).
+// For the self-contained TestMetricsRefresh, we use this local mock.
+type MockAssigner struct {
+	tmock.Mock
+}
+
+// Assign mocks the Assign method.
+func (m *MockAssigner) Assign(ctx context.Context, instanceID, zone string, filter []string, orderBy string) (string, error) {
+	args := m.Called(ctx, instanceID, zone, filter, orderBy)
+	return args.String(0), args.Error(1)
+}
+
+// Unassign mocks the Unassign method.
+func (m *MockAssigner) Unassign(ctx context.Context, instanceID, zone string) error {
+	args := m.Called(ctx, instanceID, zone)
+	return args.Error(0)
+}
+
+// GetIPAddressStats mocks the GetIPAddressStats method.
+func (m *MockAssigner) GetIPAddressStats(ctx context.Context, filter []string, orderBy string) (usable, assigned int, err error) {
+	args := m.Called(ctx, filter, orderBy)
+	return args.Int(0), args.Int(1), args.Error(2)
+}
+
+func TestMetricsRefresh(t *testing.T) {
+	// Register metrics for this test and defer unregistration
+	// Ensure global metrics are registered for this test, similar to how they are in runCmd
+	// This might cause issues if other tests run in parallel and also manipulate global registry.
+	// Consider using a local registry if tests become flaky.
+	prometheus.MustRegister(kubeipIPAddressUsableTotal)
+	prometheus.MustRegister(kubeipIPAddressAssignedTotal)
+	prometheus.MustRegister(kubeipIPAddressAvailableTotal)
+	// kubeipIPAddressAssigned is a GaugeVec, might need different handling if tested
+
+	defer prometheus.Unregister(kubeipIPAddressUsableTotal)
+	defer prometheus.Unregister(kubeipIPAddressAssignedTotal)
+	defer prometheus.Unregister(kubeipIPAddressAvailableTotal)
+	// defer prometheus.Unregister(kubeipIPAddressAssigned) // If it were registered
+
+	log := logrus.NewEntry(logrus.New())
+	// Set to WarnLevel to reduce noise during tests, or DebugLevel for more info
+	log.Logger.SetLevel(logrus.WarnLevel)
+
+	mockAssigner := new(MockAssigner) // Uses the local MockAssigner
+	cfg := &config.Config{
+		MetricsRefreshInterval: 100 * time.Millisecond,
+		Filter:                 []string{"env=test", "region=us-east-1"}, // Example filter
+		OrderBy:                "name",      // Example orderby
+	}
+
+	// --- Setup mock expectations ---
+	// 1. Initial call (simulating what might happen in `run` before the refresh loop starts its own ticking)
+	// This simulates the initial fetch performed by the run function itself.
+	mockAssigner.On("GetIPAddressStats", tmock.Anything, cfg.Filter, cfg.OrderBy).Return(10, 5, nil).Once()
+
+	// --- Simulate initial metric values (as if set by `run` function) ---
+	// We call the mock directly to get the values for the initial setup.
+	// This is because the test is focused on the goroutine's behavior, assuming initial state.
+	usableInitial, assignedInitial, errInitial := mockAssigner.GetIPAddressStats(context.Background(), cfg.Filter, cfg.OrderBy)
+	if errInitial != nil { // Use if, not assert, to allow mock to record this call for AssertExpectations
+		t.Fatalf("Mock call for initial stats should not error: %v", errInitial)
+	}
+
+	kubeipIPAddressUsableTotal.Set(float64(usableInitial))
+	kubeipIPAddressAssignedTotal.Set(float64(assignedInitial))
+	kubeipIPAddressAvailableTotal.Set(float64(usableInitial - assignedInitial))
+
+	// 2. Refreshed call (this is what the ticker loop inside the goroutine should call)
+	mockAssigner.On("GetIPAddressStats", tmock.Anything, cfg.Filter, cfg.OrderBy).Return(12, 6, nil).Once()
+
+	// Context for controlling the refresh loop goroutine's lifetime
+	loopCtx, cancelLoop := context.WithTimeout(context.Background(), 500*time.Millisecond) // Test timeout
+	defer cancelLoop() // Ensure cancellation at the end of the test
+
+	// --- Start the metrics refresh goroutine (mimicking the one in `main.go`'s `run` function) ---
+	// This is a simplified version of the goroutine in main.go's run()
+	go func() {
+		if cfg.MetricsRefreshInterval <= 0 {
+			// log.Warn("test metrics refresh: MetricsRefreshInterval is not positive, refresh goroutine will not start.")
+			return
+		}
+		ticker := time.NewTicker(cfg.MetricsRefreshInterval)
+		defer ticker.Stop()
+
+		// log.Debug("test metrics refresh: Starting goroutine")
+		for {
+			select {
+			case <-ticker.C:
+				// log.Debug("test metrics refresh: Tick received")
+				// Pass loopCtx to GetIPAddressStats for cancellation propagation if the call is long-running
+				usable, assigned, err := mockAssigner.GetIPAddressStats(loopCtx, cfg.Filter, cfg.OrderBy)
+				if err != nil {
+					// log.WithError(err).Warn("test metrics refresh: GetIPAddressStats failed during refresh")
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						// log.Debug("test metrics refresh: Context done during stats fetch, exiting goroutine.")
+						return
+					}
+					continue
+				}
+				kubeipIPAddressUsableTotal.Set(float64(usable))
+				kubeipIPAddressAssignedTotal.Set(float64(assigned))
+				kubeipIPAddressAvailableTotal.Set(float64(usable - assigned))
+				// log.WithFields(logrus.Fields{"usable": usable, "assigned": assigned}).Debug("test metrics refresh: Stats updated")
+			case <-loopCtx.Done():
+				// log.Info("test metrics refresh: Context done, stopping goroutine.")
+				return
+			}
+		}
+	}()
+
+	// --- Wait for the refresh to occur ---
+	// Allow time for at least one ticker tick and processing.
+	time.Sleep(cfg.MetricsRefreshInterval + 50*time.Millisecond)
+	// log.Debug("test metrics refresh: Finished sleeping, proceeding to assertions.")
+
+	// --- Fetch and assert metrics values ---
+	// Using testutil.CollectAndCompare for checking specific metric values.
+	expectedUsable := `# HELP kubeip_ip_address_usable_total Total number of reserved IP addresses found and usable by KubeIP
+# TYPE kubeip_ip_address_usable_total gauge
+kubeip_ip_address_usable_total 12
+`
+	if err := testutil.CollectAndCompare(kubeipIPAddressUsableTotal, strings.NewReader(expectedUsable), "kubeip_ip_address_usable_total"); err != nil {
+		t.Errorf("Usable total metric validation failed: %v", err)
+	}
+
+	expectedAssigned := `# HELP kubeip_ip_address_assigned_total Total number of available IP addresses currently in use
+# TYPE kubeip_ip_address_assigned_total gauge
+kubeip_ip_address_assigned_total 6
+`
+	if err := testutil.CollectAndCompare(kubeipIPAddressAssignedTotal, strings.NewReader(expectedAssigned), "kubeip_ip_address_assigned_total"); err != nil {
+		t.Errorf("Assigned total metric validation failed: %v", err)
+	}
+
+	expectedAvailable := `# HELP kubeip_ip_address_available_total Total number of available IP addresses still available (not in use)
+# TYPE kubeip_ip_address_available_total gauge
+kubeip_ip_address_available_total 6
+`
+	if err := testutil.CollectAndCompare(kubeipIPAddressAvailableTotal, strings.NewReader(expectedAvailable), "kubeip_ip_address_available_total"); err != nil {
+		t.Errorf("Available total metric validation failed: %v", err)
+	}
+
+	// --- Verify mock expectations ---
+	mockAssigner.AssertExpectations(t)
+	// log.Debug("test metrics refresh: Mock expectations asserted.")
+
+	// Explicitly cancel the context to ensure the goroutine stops, though timeout also handles it.
+	cancelLoop()
+	// Brief pause to allow the goroutine to process cancellation and exit cleanly.
+	time.Sleep(50 * time.Millisecond)
+	// log.Debug("test metrics refresh: Test completed.")
+}
+
 func TestMetricsUpdates(t *testing.T) {
 	log := prepareLogger("debug", false)
 	client := fake.NewSimpleClientset() // Mock Kubernetes client
@@ -329,16 +484,16 @@ func TestMetricsEndpoint(t *testing.T) {
 
 	// Check for presence of metrics and their values
 	expectedMetrics := []string{
-		"# HELP kubeip_ip_address_assigned Indicates if an IP address was assigned to the node KubeIP is running on (0 for success, 1 for failure).",
+		"# HELP kubeip_ip_address_assigned Indicates if an IP address was assigned to the node KubeIP is running on (0 for success, 1 for failure)",
 		"# TYPE kubeip_ip_address_assigned gauge",
 		`kubeip_ip_address_assigned{ip_address="5.6.7.8",ip_address_name="5.6.7.8",k8s_node="test-node-endpoint"} 0`,
-		"# HELP kubeip_ip_address_assigned_total Total number of available IP addresses currently in use.",
+		"# HELP kubeip_ip_address_assigned_total Total number of available IP addresses currently in use",
 		"# TYPE kubeip_ip_address_assigned_total gauge",
 		"kubeip_ip_address_assigned_total 5",
-		"# HELP kubeip_ip_address_available_total Total number of available IP addresses still available (not in use).",
+		"# HELP kubeip_ip_address_available_total Total number of available IP addresses still available (not in use)",
 		"# TYPE kubeip_ip_address_available_total gauge",
 		"kubeip_ip_address_available_total 15",
-		"# HELP kubeip_ip_address_usable_total Total number of reserved IP addresses found and usable by KubeIP.",
+		"# HELP kubeip_ip_address_usable_total Total number of reserved IP addresses found and usable by KubeIP",
 		"# TYPE kubeip_ip_address_usable_total gauge",
 		"kubeip_ip_address_usable_total 20",
 	}

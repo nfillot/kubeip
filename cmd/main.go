@@ -263,6 +263,36 @@ func run(c context.Context, log *logrus.Entry, cfg *config.Config) error {
 		}).Info("IP address stats updated")
 	}
 
+	// Goroutine to periodically refresh IP address stats for metrics
+	go func() {
+		if cfg.MetricsRefreshInterval <= 0 {
+			log.Info("MetricsRefreshInterval is not set or is invalid, metrics auto-refresh disabled.")
+			return
+		}
+		log.Infof("Starting metrics refresh goroutine with interval %v", cfg.MetricsRefreshInterval)
+		ticker := time.NewTicker(cfg.MetricsRefreshInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				log.Debug("Refreshing IP address stats for metrics...")
+				usable, assigned, statsErr := assigner.GetIPAddressStats(ctx, cfg.Filter, cfg.OrderBy)
+				if statsErr != nil {
+					log.WithError(statsErr).Warn("failed to refresh IP address stats for metrics")
+					continue // Skip updating gauges if there's an error
+				}
+				kubeipIPAddressUsableTotal.Set(float64(usable))
+				kubeipIPAddressAssignedTotal.Set(float64(assigned))
+				kubeipIPAddressAvailableTotal.Set(float64(usable - assigned))
+				log.Debug("IP address stats for metrics refreshed")
+			case <-ctx.Done():
+				log.Info("Stopping metrics refresh goroutine")
+				return
+			}
+		}
+	}()
+
 	assignedAddress, err := assignAddress(ctx, log, clientset, assigner, n, cfg)
 	if err != nil {
 		return errors.Wrap(err, "assigning static public IP address")
@@ -457,6 +487,13 @@ func main() {
 						Usage:    "The address to listen on for HTTP requests.",
 						Value:    ":9090",
 						EnvVars:  []string{"METRICS_ADDR"},
+						Category: "Metrics",
+					},
+					&cli.DurationFlag{
+						Name:     "metrics-refresh-interval",
+						Usage:    "Interval to refresh IP address statistics for metrics. Set to 0 to disable.",
+						Value:    5 * time.Minute,
+						EnvVars:  []string{"METRICS_REFRESH_INTERVAL"},
 						Category: "Metrics",
 					},
 				},
