@@ -311,27 +311,13 @@ func TestMetricsRefresh(t *testing.T) {
 
 	// --- Fetch and assert metrics values ---
 	// Using testutil.CollectAndCompare for checking specific metric values.
-	expectedUsable := `# HELP kubeip_ip_address_usable_total Total number of reserved IP addresses found and usable by KubeIP
-# TYPE kubeip_ip_address_usable_total gauge
-kubeip_ip_address_usable_total 12
-`
-	if err := testutil.CollectAndCompare(kubeipIPAddressUsableTotal, strings.NewReader(expectedUsable), "kubeip_ip_address_usable_total"); err != nil {
+	if err := testutil.CollectAndCompare(kubeipIPAddressUsableTotal, strings.NewReader("kubeip_ip_address_usable_total 12\n"), "kubeip_ip_address_usable_total"); err != nil {
 		t.Errorf("Usable total metric validation failed: %v", err)
 	}
-
-	expectedAssigned := `# HELP kubeip_ip_address_assigned_total Total number of available IP addresses currently in use
-# TYPE kubeip_ip_address_assigned_total gauge
-kubeip_ip_address_assigned_total 6
-`
-	if err := testutil.CollectAndCompare(kubeipIPAddressAssignedTotal, strings.NewReader(expectedAssigned), "kubeip_ip_address_assigned_total"); err != nil {
+	if err := testutil.CollectAndCompare(kubeipIPAddressAssignedTotal, strings.NewReader("kubeip_ip_address_assigned_total 6\n"), "kubeip_ip_address_assigned_total"); err != nil {
 		t.Errorf("Assigned total metric validation failed: %v", err)
 	}
-
-	expectedAvailable := `# HELP kubeip_ip_address_available_total Total number of available IP addresses still available (not in use)
-# TYPE kubeip_ip_address_available_total gauge
-kubeip_ip_address_available_total 6
-`
-	if err := testutil.CollectAndCompare(kubeipIPAddressAvailableTotal, strings.NewReader(expectedAvailable), "kubeip_ip_address_available_total"); err != nil {
+	if err := testutil.CollectAndCompare(kubeipIPAddressAvailableTotal, strings.NewReader("kubeip_ip_address_available_total 6\n"), "kubeip_ip_address_available_total"); err != nil {
 		t.Errorf("Available total metric validation failed: %v", err)
 	}
 
