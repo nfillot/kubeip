@@ -37,6 +37,8 @@ type Config struct {
 	TaintKey string `json:"taint-key"`
 	// MetricsAddr is the address to listen on for HTTP requests
 	MetricsAddr string `json:"metrics-addr"`
+	// MetricsRefreshInterval is the interval to refresh metrics
+	MetricsRefreshInterval time.Duration `json:"metrics-refresh-interval"`
 }
 
 func NewConfig(c *cli.Context) *Config {
@@ -56,5 +58,6 @@ func NewConfig(c *cli.Context) *Config {
 	cfg.LeaseNamespace = c.String("lease-namespace")
 	cfg.TaintKey = c.String("taint-key")
 	cfg.MetricsAddr = c.String("metrics-addr")
+	cfg.MetricsRefreshInterval = c.Duration("metrics-refresh-interval")
 	return &cfg
 }
