@@ -22,6 +22,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	tmock "github.com/stretchr/testify/mock"
 	"k8s.io/client-go/kubernetes/fake"
+	"github.com/sirupsen/logrus" // Added for TestMetricsRefresh
 )
 
 func Test_assignAddress(t *testing.T) {
@@ -469,16 +470,16 @@ func TestMetricsEndpoint(t *testing.T) {
 
 	// Check for presence of metrics and their values
 	expectedMetrics := []string{
-		"# HELP kubeip_ip_address_assigned Indicates if an IP address was assigned to the node KubeIP is running on (0 for success, 1 for failure).",
+		"# HELP kubeip_ip_address_assigned Indicates if an IP address was assigned to the node KubeIP is running on (0 for success, 1 for failure)",
 		"# TYPE kubeip_ip_address_assigned gauge",
 		`kubeip_ip_address_assigned{ip_address="5.6.7.8",ip_address_name="5.6.7.8",k8s_node="test-node-endpoint"} 0`,
-		"# HELP kubeip_ip_address_assigned_total Total number of available IP addresses currently in use.",
+		"# HELP kubeip_ip_address_assigned_total Total number of available IP addresses currently in use",
 		"# TYPE kubeip_ip_address_assigned_total gauge",
 		"kubeip_ip_address_assigned_total 5",
-		"# HELP kubeip_ip_address_available_total Total number of available IP addresses still available (not in use).",
+		"# HELP kubeip_ip_address_available_total Total number of available IP addresses still available (not in use)",
 		"# TYPE kubeip_ip_address_available_total gauge",
 		"kubeip_ip_address_available_total 15",
-		"# HELP kubeip_ip_address_usable_total Total number of reserved IP addresses found and usable by KubeIP.",
+		"# HELP kubeip_ip_address_usable_total Total number of reserved IP addresses found and usable by KubeIP",
 		"# TYPE kubeip_ip_address_usable_total gauge",
 		"kubeip_ip_address_usable_total 20",
 	}
